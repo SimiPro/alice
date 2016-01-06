@@ -1,12 +1,44 @@
 // Package alice provides a convenient way to chain http handlers.
 package alice
 
-import "net/http"
+import (
+	"log"
+	"golang.org/x/net/context"
+	"net/http"
+)
+
+func NewContextAdapter(c context.Context, handler ContextHandler) *ContextAdapter {
+	return &ContextAdapter {
+		ctx: c,
+		handler: handler,
+	}
+}
+
+type ContextAdapter struct {
+	ctx context.Context
+	handler ContextHandler
+}
+
+func (ca *ContextAdapter) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
+	ca.handler.ServeHTTPContext(ca.ctx, rw, req)
+}
+
+
+type ContextHandler interface {
+	ServeHTTPContext(context.Context, http.ResponseWriter, *http.Request)
+}
+
+type ContextHandlerFunc func(context.Context, http.ResponseWriter, *http.Request)
+
+
+func (h ContextHandlerFunc) ServeHTTPContext(ctx context.Context, rw http.ResponseWriter, r *http.Request) {
+	h(ctx, rw, r)
+}
 
 // A constructor for a piece of middleware.
 // Some middleware use this constructor out of the box,
 // so in most cases you can just pass somepackage.New
-type Constructor func(http.Handler) http.Handler
+type Constructor func(ContextHandler) ContextHandler
 
 // Chain acts as a list of http.Handler constructors.
 // Chain is effectively immutable:
@@ -45,19 +77,21 @@ func New(constructors ...Constructor) Chain {
 // For proper middleware, this should cause no problems.
 //
 // Then() treats nil as http.DefaultServeMux.
-func (c Chain) Then(h http.Handler) http.Handler {
-	var final http.Handler
+
+// we return a context adapter because we can him directly serve
+func (c Chain) ThenWithContext(cnx context.Context, h ContextHandler) *ContextAdapter {
+	var final ContextHandler
 	if h != nil {
 		final = h
 	} else {
-		final = http.DefaultServeMux
+		final = nil // TODO: implement wrapper around http.DefaultServeMux
+		log.Fatalf("Error Contexthandler cant be null")
 	}
 
 	for i := len(c.constructors) - 1; i >= 0; i-- {
 		final = c.constructors[i](final)
 	}
-
-	return final
+	return NewContextAdapter(cnx, final)
 }
 
 // ThenFunc works identically to Then, but takes
@@ -68,11 +102,11 @@ func (c Chain) Then(h http.Handler) http.Handler {
 //     c.ThenFunc(fn)
 //
 // ThenFunc provides all the guarantees of Then.
-func (c Chain) ThenFunc(fn http.HandlerFunc) http.Handler {
+func (c Chain) ThenFuncWithContext(cnx context.Context, fn ContextHandlerFunc) *ContextAdapter {
 	if fn == nil {
-		return c.Then(nil)
+		return c.ThenWithContext(cnx, nil)
 	}
-	return c.Then(http.HandlerFunc(fn))
+	return c.ThenWithContext(cnx, ContextHandlerFunc(fn))
 }
 
 // Append extends a chain, adding the specified constructors
